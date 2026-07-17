@@ -300,23 +300,21 @@ class FeishuFSBase(LinkDocumentFSBase):
     def _extract_table_grid(
         cell_ids: List[str], block_map: Dict[str, Dict[str, Any]],
         rows: int, cols: int,
-    ) -> List[List[str]]:
-        grid: List[str] = []
+    ) -> List[List[Optional[List[Dict[str, Any]]]]]:
+        grid: List[Optional[List[Dict[str, Any]]]] = []
         for cid in cell_ids:
             cell = block_map.get(cid)
             if cell is None:
-                grid.append('')
+                grid.append(None)
                 continue
-            cell_text = ''
+            elements: List[Dict[str, Any]] = []
             for tcid in (cell.get('children') or []):
                 txt_blk = block_map.get(tcid)
                 if txt_blk:
-                    parts = [(el.get('text_run') or {}).get('content', '')
-                             for el in (txt_blk.get('text') or {}).get('elements', [])]
-                    cell_text += ''.join(parts)
-            grid.append(cell_text if cell_text.strip() else '')
+                    elements.extend(txt_blk.get('text', {}).get('elements', []))
+            grid.append(elements if elements else None)
         return [
-            [grid[r * cols + c] if r * cols + c < len(grid) else ''
+            [grid[r * cols + c] if r * cols + c < len(grid) else None
              for c in range(cols)]
             for r in range(rows)
         ]
@@ -488,7 +486,8 @@ class FeishuFSBase(LinkDocumentFSBase):
                 cell_blocks.extend(x for x in (row_data.get('items') or []) if x.get('block_type') == 32)
         return cell_blocks
 
-    def _write_cell_text(self, document_id: str, cell_block_id: str, text: str) -> None:
+    def _write_cell_text(self, document_id: str, cell_block_id: str,
+                         elements: List[Dict[str, Any]]) -> None:
         cell_children_url = (
             f'{self._base_url}/docx/v1/documents/{document_id}/blocks/{cell_block_id}/children')
         cd = (self._get(cell_children_url, params={'page_size': 10}) or {}).get('data') or {}
@@ -496,22 +495,23 @@ class FeishuFSBase(LinkDocumentFSBase):
         if text_blocks:
             self._patch(
                 f'{self._base_url}/docx/v1/documents/{document_id}/blocks/{text_blocks[0]["block_id"]}',
-                json={'update_text_elements': {'elements': [{'text_run': {'content': text}}]}})
+                json={'update_text_elements': {'elements': elements}})
         else:
             self._post(cell_children_url, json={
                 'index': 0,
-                'children': [{'block_type': 2, 'text': {'elements': [{'text_run': {'content': text}}]}}],
+                'children': [{'block_type': 2, 'text': {'elements': elements}}],
             })
 
     def _fill_table_cells(self, document_id: str, table_block_id: str,
-                          grid: List[List[str]], cell_ids: Optional[List[str]] = None) -> None:
+                          grid: List[List[Optional[List[Dict[str, Any]]]]],
+                          cell_ids: Optional[List[str]] = None) -> None:
         flat_cells = [c for row in grid for c in row]
         if not cell_ids:
             cell_blocks = self._get_table_cells(document_id, table_block_id)
             cell_ids = [b['block_id'] for b in cell_blocks if b.get('block_id')]
-        for cell_id, text in zip(cell_ids[:len(flat_cells)], flat_cells):
-            if cell_id and text:
-                self._write_cell_text(document_id, cell_id, text)
+        for cell_id, elements in zip(cell_ids[:len(flat_cells)], flat_cells):
+            if cell_id and elements:
+                self._write_cell_text(document_id, cell_id, elements)
 
 
 class FeishuFS(FeishuFSBase):
@@ -652,7 +652,7 @@ class FeishuFS(FeishuFSBase):
                              headers={'Range': f'bytes={start}-{end - 1}'})
         return resp.content
 
-    def _upload_data(self, path: str, data: bytes, **kwargs) -> None:
+    def _upload_data(self, path: str, data: bytes, **kwargs) -> Optional[Dict[str, Any]]:
         parts = [p for p in path.strip('/').split('/') if p]
         name = parts[-1] if parts else 'untitled'
         parent_token = self._resolve_path_to_token('/' + '/'.join(parts[:-1])) if len(parts) > 1 else ''
@@ -685,6 +685,11 @@ class FeishuFS(FeishuFSBase):
             except (RuntimeError, requests.HTTPError):
                 LOG.warning('Convert API failed, falling back to file upload')
                 self._upload_file_to_drive(name, data, folder_token=parent_token)
+            return {
+                'adapter': 'feishu',
+                'document_id': doc_id,
+                'title': doc_title,
+            }
         else:
             self._upload_file_to_drive(name, data, folder_token=parent_token)
 
@@ -736,14 +741,13 @@ class FeishuWikiFS(FeishuFSBase):
     document_provider = 'feishu'
     __public_apis__ = LinkDocumentFSBase.build_public_apis(extra=['search', 'find'])
 
-    def _create_docx_node(self, title: str, parent_token: str = '') -> str:
+    def _create_docx_node(self, title: str, parent_token: str = '') -> Dict[str, Any]:
         url = f'{self._base_url}/wiki/v2/spaces/{self._effective_space_id()}/nodes'
         payload: Dict[str, Any] = {'obj_type': 'docx', 'node_type': 'origin', 'title': title}
         if parent_token:
             payload['parent_node_token'] = parent_token
         data = self._post(url, json=payload)
-        node = data.get('data', {}).get('node') or {}
-        return node.get('obj_token') or ''
+        return (data.get('data') or {}).get('node', {})
 
     def _append_docx_text(self, document_id: str, text: str) -> None:
         if not text:
@@ -861,14 +865,25 @@ class FeishuWikiFS(FeishuFSBase):
     def _resolve_document_ref(self, url_or_path: str) -> Dict[str, Any]:
         return self.resolve_wiki_ref(url_or_path)
 
-    @staticmethod
-    def _node_to_ref_dict(node: Dict[str, Any], fallback_token: str = '') -> Dict[str, Any]:
+    def _node_to_ref_dict(self, node: Dict[str, Any], fallback_token: str = '') -> Dict[str, Any]:
         node_token = node.get('node_token') or fallback_token
+        title = node.get('title') or ''
+        # For docx nodes, fetch the real document title from the Docx API
+        obj_type = node.get('obj_type', '')
+        if obj_type == 'docx' and node.get('obj_token'):
+            try:
+                url = f'{self._base_url}/docx/v1/documents/{node["obj_token"]}'
+                resp = self._get(url)
+                doc_title = (resp.get('data') or {}).get('document', {}).get('title', '')
+                if doc_title:
+                    title = doc_title
+            except Exception:
+                pass  # fall back to wiki node title
         return {
             'node_token': node_token,
             'space_id': node.get('space_id') or '',
-            'title': node.get('title') or '',
-            'obj_type': node.get('obj_type') or '',
+            'title': title,
+            'obj_type': obj_type,
             'obj_token': node.get('obj_token') or '',
             'has_child': bool(node.get('has_child')),
             'creator': node.get('creator') or '',
@@ -1094,13 +1109,23 @@ class FeishuWikiFS(FeishuFSBase):
     def _download_range(self, path: str, start: int, end: int) -> bytes:
         return self._fetch_wiki_content(path)[start:end]
 
-    def _upload_data(self, path: str, data: bytes, **kwargs) -> None:
+    def _upload_data(self, path: str, data: bytes, **kwargs) -> Optional[Dict[str, Any]]:
         parts = [p for p in path.strip('/').split('/') if p]
         name = parts[-1] if parts else 'untitled'
         parent_token = self._resolve_path_to_token('/' + '/'.join(parts[:-1])) if len(parts) > 1 else ''
-        doc_id = self._create_docx_node(name, parent_token=parent_token)
+        # Check if node already exists at this path (idempotent write)
+        node: Dict[str, Any] = {}
+        try:
+            existing_token = self._resolve_path_to_token(path)
+            node = self._get_node(existing_token) if existing_token else {}
+        except FileNotFoundError:
+            pass
+        doc_id = node.get('obj_token') or ''
         if not doc_id:
-            raise RuntimeError('Feishu wiki create docx node failed: empty obj_token')
+            node = self._create_docx_node(name, parent_token=parent_token)
+            doc_id = node.get('obj_token') or ''
+            if not doc_id:
+                raise RuntimeError('Feishu wiki create docx node failed: empty obj_token')
         try:
             text = data.decode('utf-8')
         except UnicodeDecodeError as e:
@@ -1119,6 +1144,14 @@ class FeishuWikiFS(FeishuFSBase):
                 self._append_docx_text(doc_id, text)
         else:
             self._append_docx_text(doc_id, text)
+        return {
+            'adapter': 'feishu',
+            'doc_id': doc_id,
+            'node_token': node.get('node_token', ''),
+            'title': node.get('title', ''),
+            'space_id': node.get('space_id', ''),
+            'url': node.get('url', ''),
+        }
 
     def _download_doc_raw(self, doc_token: str, obj_type: str = 'docx') -> bytes:
         if obj_type == 'docx':

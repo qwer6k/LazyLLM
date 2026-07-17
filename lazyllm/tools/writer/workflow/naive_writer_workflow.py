@@ -7,6 +7,7 @@ from ..tools.planning_tools import WriterPlanningTools
 from ..tools.quality_tools import WriterQualityTools
 from ..tools.resource_tools import WriterResourceTools
 from ..tools.revision_tools import WriterRevisionTools
+from ..data_models.task import WritingTask
 from ..data_models.writing import DraftDocument
 
 
@@ -55,10 +56,11 @@ class NaiveWriterWorkflow:
             adapters=adapters,
         )
 
-    def write(self, task: Any, input_resources: Any = None) -> dict:
+    def write(self, task: Any) -> dict:
+        wt = self.resource._unified_model(task, WritingTask)
         resource_profiles = self.resource.profile_resources(
             task=task,
-            input_resources=input_resources,
+            input_resources=wt.inputs,
         )
         writing_context = self.context.create_writing_context(
             task=task,
@@ -108,10 +110,9 @@ class NaiveWriterWorkflow:
             draft=self._artifact_ref(draft_document, 'draft_document'),
             context=self._artifact_ref(writing_context, 'writing_context'),
         )
-        target_doc = task.get('target_document') if isinstance(task, dict) else getattr(task, 'target_document', None)
         write_result = self.resource.write_to_document(
             content=self._artifact_ref(writing_output, 'writing_output'),
-            target_document=target_doc,
+            target_document=wt.target_document,
         )
 
         return {

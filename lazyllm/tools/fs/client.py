@@ -128,8 +128,8 @@ class _FSRouter:
     def read_file(self, path: str) -> str:
         return self._dispatch('read_file', path)
 
-    def write_file(self, path: str, data: bytes) -> None:
-        self._dispatch('write_file', path, data)
+    def write_file(self, path: str, data: bytes, **kwargs) -> Any:
+        return self._dispatch('write_file', path, data, **kwargs)
 
     def copy(self, path1: str, path2: str, recursive: bool = False, **kwargs) -> None:
         self._dispatch('copy', path1, path2, recursive=recursive, **kwargs)

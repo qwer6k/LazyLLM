@@ -208,10 +208,9 @@ class WriterResourceTools(WriterToolBase):
                 protocol, space_id, real_path = _fs_client.FS._parse(locator)
                 fs = _fs_client.FS._get_or_create_fs(protocol, space_id, real_path)
                 adapter = adapter or protocol
-                fs.write_file(real_path, text.encode('utf-8'))
-                resolved_ref = fs.resolve_link(real_path) if hasattr(fs, 'resolve_link') else {}
-                resolved_ref = resolved_ref or {}
-                doc_id = resolved_ref.get('object_id') or resolved_ref.get('obj_token') or ''
+                result = fs.write_file(real_path, text.encode('utf-8'),
+                                       content_type=output.output_format if output else None)
+                doc_id = (result or {}).get('document_id') or (result or {}).get('doc_id') or ''
             except Exception:
                 LOG.warning('write_to_document: FS write failed, content not written to target platform')
 

@@ -193,8 +193,8 @@ class LazyLLMFSBase(AbstractFileSystem, CredentialMixin, metaclass=_CloudFSMeta)
         '''
         return self.read_bytes(path).decode('utf-8')
 
-    def write_file(self, path: str, data: bytes) -> None:
-        self._upload_data(path, data)
+    def write_file(self, path: str, data: bytes, **kwargs) -> Any:
+        return self._upload_data(path, data, **kwargs)
 
     def write(self, path: str, content: str) -> None:
         '''Write text content to a remote file or document.
